@@ -28,8 +28,11 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 SQUARE_MM = 20.0
 PX_PER_MM = 3.1
-# reference board that defines the (axis-aligned, central) top-down frame
-REF_NAME = "SI0201437020260723044428_00001_000_040_AfterRecoating.jpg"
+# Reference board that defines the top-down frame. Use a CLEANLY-detected board,
+# NOT the central 044428 board: its top-row corners are noisy, and anchoring to it
+# skews the whole rectification (cross-field cell spread 0.48mm vs 0.12mm for any
+# other board). 075337 is a clean, bed-aligned board.
+REF_NAME = "SI0201437020260723075337_00001_000_040_AfterRecoating.jpg"
 
 
 def detect(gray):
@@ -74,6 +77,21 @@ mapx, mapy = cv2.initUndistortRectifyMap(K, dist, None, K, img_size, cv2.CV_32FC
 und_ref = cv2.undistortPoints(ref_corners, K, dist, P=K).reshape(-1, 2)
 obj_px = (ref_objp[:, :2] * PX_PER_MM).astype(np.float32)
 H0, _ = cv2.findHomography(und_ref, obj_px, cv2.RANSAC)
+
+# The anchor board's local frame has an arbitrary orientation (it was placed by
+# hand). Re-orient the metric frame so the rectified output matches the raw image
+# orientation (image +x -> right, +y -> down). Pure rotation/flip -> no effect on
+# metric accuracy, only cosmetic.
+cx, cy = img_size[0] / 2, img_size[1] / 2
+q = cv2.perspectiveTransform(
+    np.array([[[cx, cy]], [[cx + 100, cy]], [[cx, cy + 100]]], np.float32), H0).reshape(-1, 2)
+ax, ay = q[1] - q[0], q[2] - q[0]
+ang = np.arctan2(ax[1], ax[0])
+c, s = np.cos(-ang), np.sin(-ang)
+R = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1.0]])
+if (R[:2, :2] @ ay)[1] < 0:                       # image-down mapped to metric-up -> flip
+    R = np.array([[1, 0, 0], [0, -1, 0], [0, 0, 1.0]]) @ R
+H0 = R @ H0
 
 w0, h0 = img_size
 frame = np.array([[0, 0], [w0, 0], [w0, h0], [0, h0]], np.float32).reshape(-1, 1, 2)
